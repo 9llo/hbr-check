@@ -1,6 +1,6 @@
-# ESXi HBR Check
+*Read this in other languages: [English](README.md), [Português](README.pt-BR.md).*
 
-A PowerShell script deployed to connect iteratively to a VMware vCenter Server, query user-selected clusters via `Out-GridView`, and analyze logs of the underlying ESXi hosts to identify Host-Based Replication (HBR) thumbprint errors via SSH. Output results are neatly exported into a CSV file and presented in a graphic grid. 
+# ESXi HBR Check
 
 ## Key Features
 
