@@ -423,25 +423,30 @@ function Invoke-AppliancePairingCompare {
     $sourceData = Import-Csv -Path $sourceFile.FullName
     $destData = Import-Csv -Path $destFile.FullName
 
-    # Extract source remote hosts based on UUID prefix and grab right-hand string
-    $sourceRemoteHosts = @()
+    # Extract source local hosts based on having NO semicolon/UUID Prefix
+    $sourceLocalHosts = @()
     foreach ($row in $sourceData) {
-        if ($row.hostID -match "^$pairingUuid`:(.*)") {
-            $sourceRemoteHosts += $matches[1]
+        if ($row.hostID -notmatch ":") {
+            $sourceLocalHosts += $row.hostID
         }
     }
 
-    # Extract dest local hosts based on having NO semicolon/UUID Prefix
-    $destLocalHosts = @()
+    # Extract dest remote hosts based on UUID prefix and grab right-hand string
+    $destRemoteHosts = @()
     foreach ($row in $destData) {
-        if ($row.hostID -notmatch ":") {
-            $destLocalHosts += $row.hostID
+        if ($row.hostID -match "^$pairingUuid`:(.*)") {
+            $destRemoteHosts += $matches[1]
         }
     }
 
     # Compare arrays
     Write-Log "Cross-referencing array pairs..."
-    $comparison = Compare-Object -ReferenceObject $sourceRemoteHosts -DifferenceObject $destLocalHosts -IncludeEqual
+    $comparison = Compare-Object -ReferenceObject $sourceLocalHosts -DifferenceObject $destRemoteHosts -IncludeEqual
+
+    Write-Log "Comparison Options:"
+    Write-Log "1. Bi-directional (Show what's missing on both ends)"
+    Write-Log "2. Source only (Show only what's on the Source but missing on Destination)"
+    $directionChoice = Read-Host "Select comparison mode (1 or 2)"
 
     $discrepancyResults = @()
     foreach ($res in $comparison) {
@@ -451,7 +456,7 @@ function Invoke-AppliancePairingCompare {
                 Status = "Missing on Destination (Found on Source only)"
             }
         }
-        elseif ($res.SideIndicator -eq "=>") {
+        elseif ($res.SideIndicator -eq "=>" -and $directionChoice -eq '1') {
             $discrepancyResults += [PSCustomObject]@{
                 HostID = $res.InputObject
                 Status = "Missing on Source (Found on Destination only)"
