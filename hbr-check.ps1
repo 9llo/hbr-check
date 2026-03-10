@@ -283,6 +283,109 @@ function Invoke-HBRCheck {
     }
 }
 
+function Invoke-AppliancePairingExtraction {
+    # Paths and Logging
+    $ScriptDir = $PSScriptRoot
+    if ([string]::IsNullOrEmpty($ScriptDir)) { $ScriptDir = $PWD.Path }
+    $logDir = Join-Path $ScriptDir "logs"
+    if (-not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Path $logDir | Out-Null
+    }
+    $logFile = Join-Path $logDir "Appliance_Extraction_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    
+    $hostInfoDir = Join-Path $ScriptDir "HostInfo"
+    if (-not (Test-Path $hostInfoDir)) {
+        New-Item -ItemType Directory -Path $hostInfoDir | Out-Null
+    }
+    
+    Start-Transcript -Path $logFile -Append -NoClobber | Out-Null
+    
+    try {
+        Write-Log "Checking for Posh-SSH module"
+        $hasPoshSSH = Get-Module -ListAvailable -Name "Posh-SSH"
+        if (-not $hasPoshSSH) {
+            Write-Log "Posh-SSH module is not installed." "Warning"
+            Write-Log "Attempting to install Posh-SSH from PSGallery for CurrentUser..."
+            Install-Module -Name "Posh-SSH" -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck
+            Write-Log "Posh-SSH installed successfully."
+        }
+        Import-Module Posh-SSH
+
+        Write-Log "Prompting for Appliance details..."
+        $applianceHost = Read-Host "Enter Replication Appliance Hostname or IP"
+        
+        $csvFile = Join-Path $hostInfoDir "$($applianceHost)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        
+        $adminUser = Read-Host "Enter Admin Username (default: root)"
+        if ([string]::IsNullOrWhiteSpace($adminUser)) { $adminUser = "root" }
+        $adminPass = Read-Host "Enter Password for $adminUser" -AsSecureString
+
+        $cred = New-Object System.Management.Automation.PSCredential($adminUser, $adminPass)
+
+        Write-Log "Connecting via SSH to appliance: $applianceHost..."
+        $sshSession = New-SSHSession -ComputerName $applianceHost -Credential $cred -AcceptKey -Force -ErrorAction Stop
+
+        if ($sshSession) {
+            Write-Log "Successfully connected to appliance."
+            
+            Write-Log "Identifying primary database..."
+            $dbIdentifyCmd = "/usr/bin/hbrsrv-bin --print-default-db"
+            $dbResult = Invoke-SSHCommand -SSHSession $sshSession -Command $dbIdentifyCmd
+            
+            $dbPath = $null
+            if ($dbResult.Output) {
+                foreach ($line in $dbResult.Output) {
+                    $cleanLine = $line.Trim()
+                    # The path is usually /etc/vmware/hbrsrv.<id>.db
+                    if ($cleanLine -match "/etc/vmware/.*\.db") {
+                        $dbPath = $cleanLine
+                        break
+                    }
+                }
+            }
+
+            if ($dbPath) {
+                Write-Log "Primary database identified: $dbPath"
+                
+                Write-Log "Extracting HostInfo table to CSV format..."
+                # Using sqlite3 .mode csv and .headers on to enforce standard CSV formatting on the raw output
+                $sqlCmd = "echo -e '.mode csv\n.headers on\nselect * from HostInfo;' | sqlite3 $dbPath"
+                
+                $extractResult = Invoke-SSHCommand -SSHSession $sshSession -Command $sqlCmd
+                
+                if ($extractResult.Output) {
+                    Write-Log "Saving extraction to $csvFile..."
+                    # Removing empty lines and trimmimg spaces to avoid double-newline glitches from SSH standard out pipes
+                    $cleanOutput = $extractResult.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() }
+                    $cleanOutput | Out-File -FilePath $csvFile -Encoding UTF8
+                    Write-Log "Extraction completed successfully."
+                }
+                else {
+                    Write-Log "No output returned from SQL query." "Warning"
+                }
+
+            }
+            else {
+                Write-Log "Could not identify the primary database from output. Try running manually." "Warning"
+            }
+
+            Write-Log "Closing SSH session..."
+            Remove-SSHSession -SSHSession $sshSession | Out-Null
+        }
+        else {
+            Write-Log "Failed to connect to appliance." "Warning"
+        }
+    }
+    catch {
+        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Write-Warning "[$time] [Warning] Error: $_"
+    }
+    finally {
+        Write-Log "Log saved to: $logFile"
+        Stop-Transcript | Out-Null
+    }
+}
+
 function Show-Menu {
     do {
         Clear-Host
@@ -290,6 +393,7 @@ function Show-Menu {
         Write-Host "              VMware Diagnostics Menu             " -ForegroundColor Cyan
         Write-Host "==================================================" -ForegroundColor Cyan
         Write-Host "1. Check hbr-agent thumbprint error"
+        Write-Host "2. Extract pairing info from replication appliance"
         Write-Host "0. Exit"
         Write-Host "==================================================" -ForegroundColor Cyan
         
@@ -298,6 +402,11 @@ function Show-Menu {
         switch ($choice) {
             '1' {
                 Invoke-HBRCheck
+                Write-Host "`nPress Enter to return to the menu..."
+                Read-Host | Out-Null
+            }
+            '2' {
+                Invoke-AppliancePairingExtraction
                 Write-Host "`nPress Enter to return to the menu..."
                 Read-Host | Out-Null
             }
