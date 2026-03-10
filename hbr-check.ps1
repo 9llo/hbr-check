@@ -105,7 +105,8 @@ try {
     }
     
     # Ensure no stale vCenter connections exist before connecting
-    if ($global:DefaultVIServers.Count -gt 0) {
+    $activeServers = Get-Variable -Name "DefaultVIServers" -Scope Global -ErrorAction SilentlyContinue
+    if ($activeServers -and $activeServers.Value -and $activeServers.Value.Count -gt 0) {
         Write-Log "Disconnecting existing vCenter sessions..."
         Disconnect-VIServer * -Force -Confirm:$false | Out-Null
     }
