@@ -386,6 +386,97 @@ function Invoke-AppliancePairingExtraction {
     }
 }
 
+function Invoke-AppliancePairingCompare {
+    $ScriptDir = $PSScriptRoot
+    if ([string]::IsNullOrEmpty($ScriptDir)) { $ScriptDir = $PWD.Path }
+    
+    $hostInfoDir = Join-Path $ScriptDir "HostInfo"
+    if (-not (Test-Path $hostInfoDir)) {
+        Write-Warning "HostInfo folder not found. Please extract DBs using Option 2 first."
+        return
+    }
+
+    Write-Log "Select the SOURCE HostInfo CSV export"
+    $sourceFile = Get-ChildItem -Path $hostInfoDir -Filter "*.csv" | Out-GridView -Title "Select Source HostInfo CSV" -OutputMode Single
+    if (-not $sourceFile) { return }
+
+    Write-Log "Select the DESTINATION HostInfo CSV export"
+    $destFile = Get-ChildItem -Path $hostInfoDir -Filter "*.csv" | Out-GridView -Title "Select Destination HostInfo CSV" -OutputMode Single
+    if (-not $destFile) { return }
+
+    $pairingsPath = Join-Path $ScriptDir "pairings.csv"
+    if (-not (Test-Path $pairingsPath)) {
+        Write-Warning "pairings.csv not found in $ScriptDir"
+        return
+    }
+
+    Write-Log "Retrieving pairing configurations..."
+    $pairings = Import-Csv -Path $pairingsPath
+    $selectedPairing = $pairings | Out-GridView -Title "Select Valid Pairing UUID Mapping" -OutputMode Single
+    if (-not $selectedPairing) { return }
+
+    $pairingUuid = $selectedPairing.pairing_id
+
+    Write-Log "Comparing Source: $($sourceFile.Name) vs Dest: $($destFile.Name)"
+    Write-Log "Using Mapping UUID: $pairingUuid"
+
+    $sourceData = Import-Csv -Path $sourceFile.FullName
+    $destData = Import-Csv -Path $destFile.FullName
+
+    # Extract source remote hosts based on UUID prefix and grab right-hand string
+    $sourceRemoteHosts = @()
+    foreach ($row in $sourceData) {
+        if ($row.hostID -match "^$pairingUuid`:(.*)") {
+            $sourceRemoteHosts += $matches[1]
+        }
+    }
+
+    # Extract dest local hosts based on having NO semicolon/UUID Prefix
+    $destLocalHosts = @()
+    foreach ($row in $destData) {
+        if ($row.hostID -notmatch ":") {
+            $destLocalHosts += $row.hostID
+        }
+    }
+
+    # Compare arrays
+    Write-Log "Cross-referencing array pairs..."
+    $comparison = Compare-Object -ReferenceObject $sourceRemoteHosts -DifferenceObject $destLocalHosts -IncludeEqual
+
+    $discrepancyResults = @()
+    foreach ($res in $comparison) {
+        if ($res.SideIndicator -eq "<=") {
+            $discrepancyResults += [PSCustomObject]@{
+                HostID = $res.InputObject
+                Status = "Missing on Destination (Found on Source only)"
+            }
+        }
+        elseif ($res.SideIndicator -eq "=>") {
+            $discrepancyResults += [PSCustomObject]@{
+                HostID = $res.InputObject
+                Status = "Missing on Source (Found on Destination only)"
+            }
+        }
+    }
+
+    if ($discrepancyResults.Count -gt 0) {
+        Write-Log "Discrepancies Found! Reporting discrepancies." "Warning"
+        
+        $resultsDir = Join-Path $ScriptDir "results"
+        if (-not (Test-Path $resultsDir)) {
+            New-Item -ItemType Directory -Path $resultsDir | Out-Null
+        }
+        $discrepFile = Join-Path $resultsDir "Pairing_Discrepancies_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        $discrepancyResults | Export-Csv -Path $discrepFile -NoTypeInformation -Encoding UTF8
+        Write-Log "Results saved to $discrepFile"
+        
+        $discrepancyResults | Out-GridView -Title "HBR Discrepancies Found ($pairingUuid)"
+    }
+    else {
+        Write-Log "Success! Both appliances map exactly equally. No Discrepancies Found."
+    }
+}
+
 function Show-Menu {
     do {
         Clear-Host
@@ -394,6 +485,7 @@ function Show-Menu {
         Write-Host "==================================================" -ForegroundColor Cyan
         Write-Host "1. Check hbr-agent thumbprint error"
         Write-Host "2. Extract pairing info from replication appliance"
+        Write-Host "3. Compare hostInfo between appliance replications"
         Write-Host "0. Exit"
         Write-Host "==================================================" -ForegroundColor Cyan
         
@@ -407,6 +499,11 @@ function Show-Menu {
             }
             '2' {
                 Invoke-AppliancePairingExtraction
+                Write-Host "`nPress Enter to return to the menu..."
+                Read-Host | Out-Null
+            }
+            '3' {
+                Invoke-AppliancePairingCompare
                 Write-Host "`nPress Enter to return to the menu..."
                 Read-Host | Out-Null
             }
